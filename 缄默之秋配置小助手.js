@@ -720,6 +720,14 @@ MVU_CSS.textContent = `
   .jmzq-mvu-collapse-arrow { display: inline-block; font-size: 8px; transition: transform 0.2s; }
   .jmzq-mvu-collapse-arrow.open { transform: rotate(90deg); }
   .jmzq-mvu-collapse-body { padding-left: 6px; }
+  .jmzq-mvu-wl-list { font-size: 11px; color: #6a5040; margin-top: 6px; line-height: 1.8; overflow-wrap: anywhere; }
+  .jmzq-mvu-wl-chip {
+    display: inline-block; font-family: Consolas, Monaco, monospace;
+    color: #6a5040;
+    background: rgba(0,0,0,0.04);
+    border: 1px solid rgba(0,0,0,0.08);
+    border-radius: 4px; padding: 1px 6px; margin: 0 4px 4px 0;
+  }
   .jmzq-mvu-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 8px; }
   #jmzq-mvu-section { padding: 10px 12px !important; }
   #jmzq-mvu-section .jmzq-mvu-subtitle:first-of-type { margin-top: 2px; }
@@ -760,6 +768,12 @@ MVU_CSS.textContent = `
     background: #d4a030; border-color: #d4a030;
   }
   .jmzq-dark .jmzq-mvu-hint { color: #8a7a5a; }
+  .jmzq-dark .jmzq-mvu-wl-list { color: #a09070; }
+  .jmzq-dark .jmzq-mvu-wl-chip {
+    color: #a09070;
+    background: rgba(255,255,255,0.06);
+    border-color: rgba(255,255,255,0.10);
+  }
   .jmzq-dark .jmzq-mvu-subtitle { color: #a09070; border-top-color: rgba(255,255,255,0.06); }
   .jmzq-dark .jmzq-mvu-collapse-header { color: #d4a030; }
   .jmzq-dark .jmzq-mvu-collapse-header:hover { color: #e8c050; }
@@ -6471,7 +6485,153 @@ if (jmzqConfirmDragHandle && jmzqConfirmDialog) {
   p.document.addEventListener('touchend', () => { dlgDrag = false; });
 }
 
+// ── 自定义 API 来源白名单 ──
+// 手工加入的域名会并入内置白名单，并从 URL 黑名单中移除；
+// 数据保存在 SillyTavern.extensionSettings._ewcYH.customWhitelist，不写入 MVU 变量。
+let customWhitelistBaseWhitelist = null;
+let customWhitelistBaseBlacklist = null;
+
+function renderCustomWhitelistList() {
+  const listEl = p.document.getElementById('jmzq-mvu-wl-list');
+  if (!listEl) return;
+  const store = ewcGetEwcYH();
+  const list = Array.isArray(store.customWhitelist) ? store.customWhitelist : [];
+  listEl.textContent = '';
+  if (!list.length) {
+    const empty = p.document.createElement('span');
+    empty.style.color = '#a09080';
+    empty.textContent = '暂无自定义域名';
+    listEl.appendChild(empty);
+    return;
+  }
+  for (const domain of list) {
+    // 用 span + 独立类名，避免酒馆主题对 code 元素的颜色规则把文字冲成浅色
+    const chip = p.document.createElement('span');
+    chip.className = 'jmzq-mvu-wl-chip';
+    chip.textContent = String(domain);
+    const del = p.document.createElement('b');
+    del.setAttribute('data-wl-remove', String(domain));
+    del.style.cssText = 'cursor:pointer;color:#b04a3a;font-weight:normal;margin-left:4px;';
+    del.textContent = '×';
+    chip.appendChild(del);
+    listEl.appendChild(chip);
+  }
+}
+
+function removeCustomWhitelistDomain(domain) {
+  const store = ewcGetEwcYH();
+  const list = Array.isArray(store.customWhitelist) ? store.customWhitelist : [];
+  const index = list.findIndex(item => String(item) === String(domain));
+  if (index < 0) return;
+  list.splice(index, 1);
+  applyCustomWhitelistLists();
+  renderCustomWhitelistList();
+  showToast('已移出白名单: ' + domain);
+  try { saveSettings(); } catch (e) {}
+}
+
+function applyCustomWhitelistLists() {
+  if (!customWhitelistBaseWhitelist) {
+    customWhitelistBaseWhitelist = CONFIG_URL_WHITELIST.slice();
+    customWhitelistBaseBlacklist = CONFIG_URL_BLACKLIST.slice();
+  }
+  const store = ewcGetEwcYH();
+  const list = Array.isArray(store.customWhitelist) ? store.customWhitelist : [];
+
+  // 每次从内置基线重建，保证幂等且可逆：
+  // 白名单 = 基线 + 自定义域名；黑名单 = 基线 - 被自定义域名覆盖的关键词。
+  CONFIG_URL_WHITELIST.length = 0;
+  CONFIG_URL_WHITELIST.push(...customWhitelistBaseWhitelist.map(k => String(k)));
+  CONFIG_URL_BLACKLIST.length = 0;
+  CONFIG_URL_BLACKLIST.push(...customWhitelistBaseBlacklist.map(k => String(k)));
+
+  for (const item of list) {
+    const domain = String(item).trim().toLowerCase();
+    if (!domain) continue;
+    if (CONFIG_URL_WHITELIST.indexOf(domain) < 0) CONFIG_URL_WHITELIST.push(domain);
+    // 黑名单按子串关键词匹配，需移除所有被该域名覆盖的关键词
+    for (let i = CONFIG_URL_BLACKLIST.length - 1; i >= 0; i--) {
+      const keyword = String(CONFIG_URL_BLACKLIST[i]).toLowerCase();
+      if (domain === keyword || domain.includes(keyword)) CONFIG_URL_BLACKLIST.splice(i, 1);
+    }
+  }
+}
+
+function initCustomWhitelistUI() {
+  const section = p.document.getElementById('jmzq-mvu-section');
+  if (section && !p.document.getElementById('jmzq-mvu-wl-add')) {
+    const anchor = p.document.getElementById('jmzq-mvu-optimize');
+    const html = '<div class="jmzq-mvu-collapse-header" id="jmzq-mvu-wl-toggle" style="font-size:13px;justify-content:center;"><span class="jmzq-mvu-collapse-arrow" id="jmzq-mvu-wl-arrow">▶</span><span>API 来源白名单</span></div>'
+      + '<div class="jmzq-mvu-collapse-body" id="jmzq-mvu-wl-panel" style="display:none;">'
+      + '<div class="jmzq-mvu-row"><label class="jmzq-mvu-label wide">新增域名</label>'
+      + '<input class="jmzq-mvu-input" id="jmzq-mvu-wl-input" placeholder="例如 api.example.com">'
+      + '<button class="jmzq-btn xs" id="jmzq-mvu-wl-add" style="flex-shrink:0;">加入白名单</button></div>'
+      + '<div class="jmzq-mvu-wl-list" id="jmzq-mvu-wl-list"></div></div>';
+    anchor ? anchor.insertAdjacentHTML('afterend', html) : section.insertAdjacentHTML('afterbegin', html);
+
+    const input = p.document.getElementById('jmzq-mvu-wl-input');
+    const addBtn = p.document.getElementById('jmzq-mvu-wl-add');
+    const listEl = p.document.getElementById('jmzq-mvu-wl-list');
+    const toggle = p.document.getElementById('jmzq-mvu-wl-toggle');
+    const arrow = p.document.getElementById('jmzq-mvu-wl-arrow');
+    const panel = p.document.getElementById('jmzq-mvu-wl-panel');
+
+    if (toggle && panel && arrow) {
+      toggle.addEventListener('click', () => {
+        const visible = panel.style.display !== 'none';
+        panel.style.display = visible ? 'none' : '';
+        arrow.classList.toggle('open', !visible);
+      });
+    }
+    if (listEl) {
+      listEl.addEventListener('click', (ev) => {
+        const domain = ev.target && ev.target.getAttribute && ev.target.getAttribute('data-wl-remove');
+        if (domain) removeCustomWhitelistDomain(domain);
+      });
+    }
+    if (addBtn) {
+      addBtn.addEventListener('click', () => {
+        let domain = String(input && input.value || '').trim().toLowerCase();
+        if (domain.indexOf('://') >= 0) domain = domain.slice(domain.indexOf('://') + 3);
+        const slashIndex = domain.indexOf('/');
+        if (slashIndex >= 0) domain = domain.slice(0, slashIndex);
+        if (!domain) return void showToast('请输入域名');
+
+        const store = ewcGetEwcYH();
+        store.customWhitelist = Array.isArray(store.customWhitelist) ? store.customWhitelist : [];
+        // 与运行期判断保持一致：内置白名单按子串匹配域名
+        if (CONFIG_URL_WHITELIST.some(keyword => domain === keyword || domain.includes(keyword))
+          || store.customWhitelist.some(keyword => domain === keyword || domain.includes(keyword))) {
+          return void showToast('该域名已在白名单中');
+        }
+
+        // 黑名单按子串关键词匹配，判断该域名是否覆盖了黑名单关键词（含正则规则）
+        const wasBlacklisted = CONFIG_URL_BLACKLIST.some(keyword => {
+          const value = String(keyword).toLowerCase();
+          return domain === value || domain.includes(value);
+        }) || CONFIG_URL_BLACKLIST_PATTERNS.some(pattern => pattern.test(domain));
+        store.customWhitelist.push(domain);
+        applyCustomWhitelistLists();
+        renderCustomWhitelistList();
+        showToast(wasBlacklisted ? '已加入白名单，并从中转站黑名单移除: ' + domain : '已加入官方白名单: ' + domain);
+        if (input) input.value = '';
+        try { saveSettings(); } catch (e) {}
+      });
+    }
+    if (input && addBtn) {
+      input.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') addBtn.click();
+      });
+    }
+  }
+  applyCustomWhitelistLists();
+  renderCustomWhitelistList();
+}
+
 // --- 初始化 ---
+// 0. 应用自定义白名单并注入配置界面（必须早于 fetch 劫持生效）
+initCustomWhitelistUI();
+
 // 1. 注入fetch劫持（拦截黑名单模型的聊天补全请求）
 ewcInjectFetchHook();
 
